@@ -17,6 +17,7 @@
 //! those waits; between them the connection is not read, which is the
 //! backpressure a slow consumer puts on the provider.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
@@ -59,7 +60,7 @@ pub struct Exchange {
     runtime: Runtime,
     deadline: Instant,
     /// Body bytes read but not yet handed out as a line.
-    pending: Vec<u8>,
+    pending: VecDeque<u8>,
     ended: bool,
 }
 
@@ -119,7 +120,7 @@ fn send(
         unreachable: e.is_connect() || e.is_timeout(),
         detail: chain(&e),
     })?;
-    Ok(Exchange { response, runtime, deadline, pending: Vec::new(), ended: false })
+    Ok(Exchange { response, runtime, deadline, pending: VecDeque::new(), ended: false })
 }
 
 impl Exchange {
@@ -128,9 +129,9 @@ impl Exchange {
     }
 
     /// The next line of the body without its line ending, or `None` at the
-    /// end. A last line without a line ending is still a line. Lines are not
-    /// allowed to grow to at most MAX_PENDING_BYTES, and an oversized
-    /// provider response is rejected.
+    /// end. A last line without a line ending is still a line. At most
+    /// MAX_PENDING_BYTES unconsumed response bytes are retained. A deque
+    /// avoids shifting the rest of a large chunk for every short SSE line.
     pub fn line(&mut self, alive: &dyn Fn() -> bool) -> Result<Option<String>, Failure> {
         loop {
             if let Some(at) = self.pending.iter().position(|byte| *byte == b'\n') {
@@ -141,7 +142,7 @@ impl Exchange {
                 if self.pending.is_empty() {
                     return Ok(None);
                 }
-                let line = std::mem::take(&mut self.pending);
+                let line: Vec<u8> = self.pending.drain(..).collect();
                 return text(&line).map(Some);
             }
             match self.runtime.drive(self.response.chunk(), self.deadline, alive)? {
@@ -168,14 +169,14 @@ fn text(line: &[u8]) -> Result<String, Failure> {
     Ok(line.trim_end_matches(['\n', '\r']).to_owned())
 }
 
-/// Refuse to append more provider bytes than the line buffer holds. The HTTP
-/// library has already allocated the incoming chunk; this bounds the adapter's
-/// pending Vec, not total process memory.
-fn append_pending(pending: &mut Vec<u8>, chunk: &[u8]) -> Result<(), Failure> {
+/// Refuse to retain more response bytes than the buffer holds. Reqwest has
+/// already allocated each chunk; this bounds the adapter's pending deque,
+/// not all process memory.
+fn append_pending(pending: &mut VecDeque<u8>, chunk: &[u8]) -> Result<(), Failure> {
     if chunk.len() > MAX_PENDING_BYTES.saturating_sub(pending.len()) {
         return Err(Failure::Limit("provider response buffer exceeds 8 MiB"));
     }
-    pending.extend_from_slice(chunk);
+    pending.extend(chunk.iter().copied());
     Ok(())
 }
 
@@ -267,18 +268,18 @@ mod tests {
     /// never grow the adapter-owned byte buffer past its limit.
     #[test]
     fn pending_provider_bytes_have_an_exact_bound() {
-        let mut pending = vec![b'x'; MAX_PENDING_BYTES - 1];
+        let mut pending = VecDeque::from(vec![b'x'; MAX_PENDING_BYTES - 1]);
         append_pending(&mut pending, b"y").unwrap();
         assert_eq!(pending.len(), MAX_PENDING_BYTES);
         assert!(matches!(append_pending(&mut pending, b"z"), Err(Failure::Limit(_))));
         assert_eq!(pending.len(), MAX_PENDING_BYTES);
 
-        let mut empty = Vec::new();
+        let mut empty = VecDeque::new();
         let oversized = vec![b'x'; MAX_PENDING_BYTES + 1];
         assert!(matches!(append_pending(&mut empty, &oversized), Err(Failure::Limit(_))));
         assert!(empty.is_empty());
         append_pending(&mut empty, b"one\ntwo\n").unwrap();
-        assert_eq!(empty, b"one\ntwo\n");
+        assert_eq!(empty.into_iter().collect::<Vec<_>>(), b"one\ntwo\n");
     }
 
     /// Several valid lines must respect the total response bound. Rejection
