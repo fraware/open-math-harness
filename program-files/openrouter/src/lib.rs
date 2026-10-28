@@ -629,7 +629,10 @@ impl Adapter {
             ));
         }
         if !(200..300).contains(&status) {
-            let text = exchange.text(&alive).unwrap_or_default();
+            // A failed body read is not a provider error envelope. In
+            // particular, a local response-size limit must retain its
+            // non-retryable failure classification.
+            let text = exchange.text(&alive).map_err(|failure| self.failed(&key, failure, Again::Soon))?;
             return wire::parse_response(status, &text, model).map_err(|e| {
                 let again = retry_for(&e, transient_status(status));
                 (Error::new(e.code, key.scrub(&e.message)), again)
