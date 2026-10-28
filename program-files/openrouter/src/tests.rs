@@ -83,6 +83,53 @@ fn oversized_provider_response_fails_without_retrying() {
     assert!(!server.join().unwrap(), "unexpected retry request");
 }
 
+/// A non-successful streaming response must preserve a local size-limit
+/// failure. An empty fallback body would instead permit retries for 503.
+#[test]
+fn oversized_error_body_in_stream_is_not_retried() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        read_request(&socket);
+        let body = vec![b'x'; (8 << 20) + 1];
+        let headers = format!(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        socket.write_all(headers.as_bytes()).unwrap();
+        // The client is allowed to close as soon as the local limit is hit.
+        let _ = socket.write_all(&body);
+        listener.set_nonblocking(true).unwrap();
+        let until = Instant::now() + Duration::from_millis(RECONNECT_BACKOFF_MS + 1_000);
+        while Instant::now() < until {
+            match listener.accept() {
+                Ok(_) => return true,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("checking for a retry: {error}"),
+            }
+        }
+        false
+    });
+    let adapter = Arc::new(Adapter::new(
+        &options(&["--base-url", &base, "--retries", "3", "--retry-backoff-ms", "10"]).unwrap(),
+        Secret("k".into()),
+    ));
+    let streams = Streams::default();
+    let id = start(&adapter, &streams, 15_000);
+    let error = loop {
+        match pull(&streams, &id) {
+            Ok(next) => assert!(next.delta.is_empty() && next.done.is_none()),
+            Err(error) => break error,
+        }
+    };
+    assert_eq!(error.code, ErrorCode::ServiceError, "{}", error.message);
+    assert!(error.message.contains("8 MiB"), "{}", error.message);
+    assert!(!server.join().unwrap(), "unexpected retry request");
+}
+
 /// Reads one HTTP request from `socket`, headers and body, and returns the body.
 fn read_request(socket: &TcpStream) -> Vec<u8> {
     socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
