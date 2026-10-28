@@ -139,8 +139,7 @@ fn malformed_provider_error_body_preserves_status_retry_policy() {
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
             read_request(&socket);
-            let reply =
-                format!("HTTP/1.1 {status} X\r\nContent-Length: 1\r\nConnection: close\r\n\r\n");
+            let reply = format!("HTTP/1.1 {status} X\r\nContent-Length: 1\r\nConnection: close\r\n\r\n");
             socket.write_all(reply.as_bytes()).unwrap();
             socket.write_all(&[0xff]).unwrap();
         });
@@ -148,12 +147,7 @@ fn malformed_provider_error_body_preserves_status_retry_policy() {
         let streams = Streams::default();
         let (_, feed) = streams.open(ProcessId(1), Instant::now() + Duration::from_secs(10)).unwrap();
         let (error, retry) = adapter
-            .stream_inner(
-                "deepseek/x",
-                &request(),
-                Instant::now() + Duration::from_secs(10),
-                &feed,
-            )
+            .stream_inner("deepseek/x", &request(), Instant::now() + Duration::from_secs(10), &feed)
             .unwrap_err();
         server.join().unwrap();
         assert_eq!(retry, expected, "status {status}: {}", error.message);
