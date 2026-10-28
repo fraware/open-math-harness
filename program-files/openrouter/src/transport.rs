@@ -341,7 +341,11 @@ mod tests {
                 lines.push(pending.drain(..).collect());
             }
             let decoded: Vec<String> = lines.iter().map(|line| text(line).unwrap()).collect();
-            assert_eq!(decoded, vec!["α".to_owned(), "".to_owned(), "β".to_owned(), "final".to_owned()], "split: {split}");
+            assert_eq!(
+                decoded,
+                vec!["α".to_owned(), "".to_owned(), "β".to_owned(), "final".to_owned()],
+                "split: {split}"
+            );
         }
     }
 
