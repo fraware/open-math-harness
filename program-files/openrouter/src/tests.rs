@@ -129,6 +129,40 @@ fn oversized_error_body_in_stream_is_not_retried() {
     assert!(!server.join().unwrap().unwrap(), "unexpected retry request");
 }
 
+/// The HTTP status still determines retryability if the provider's error
+/// body cannot be decoded. Credential/credit refusals must stay final.
+#[test]
+fn malformed_provider_error_body_preserves_status_retry_policy() {
+    for (status, expected) in [(402, Again::No), (403, Again::No), (503, Again::Later)] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            read_request(&socket);
+            let reply = format!(
+                "HTTP/1.1 {status} X\\r\\nContent-Length: 1\\r\\nConnection: close\\r\\n\\r\\n"
+            );
+            socket.write_all(reply.as_bytes()).unwrap();
+            socket.write_all(&[0xff]).unwrap();
+        });
+        let adapter = Adapter::new(&options(&["--base-url", &base]).unwrap(), Secret("k".into()));
+        let streams = Streams::default();
+        let (_, feed) = streams.open(ProcessId(1), Instant::now() + Duration::from_secs(10)).unwrap();
+        let (error, retry) = adapter
+            .stream_inner(
+                "deepseek/x",
+                &request(),
+                Instant::now() + Duration::from_secs(10),
+                &feed,
+            )
+            .unwrap_err();
+        server.join().unwrap();
+        assert_eq!(retry, expected, "status {status}: {}", error.message);
+        assert_eq!(error.code, ErrorCode::ServiceError);
+        assert!(error.message.contains("UTF-8"), "status {status}: {}", error.message);
+    }
+}
+
 /// Reads one HTTP request from `socket`, headers and body, and returns the body.
 fn read_request(socket: &TcpStream) -> Vec<u8> {
     socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
