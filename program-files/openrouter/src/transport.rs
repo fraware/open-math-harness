@@ -286,7 +286,10 @@ mod tests {
     #[test]
     fn collected_provider_body_has_an_exact_bound() {
         let mut all = String::new();
-        append_text_line(&mut all, &"x".repeat(MAX_TEXT_BYTES - 1)).unwrap();
+        let quarter = "x".repeat(MAX_TEXT_BYTES / 4 - 1);
+        for _ in 0..4 {
+            append_text_line(&mut all, &quarter).unwrap();
+        }
         assert_eq!(all.len(), MAX_TEXT_BYTES);
         assert!(matches!(append_text_line(&mut all, "y"), Err(Failure::Limit(_))));
         assert_eq!(all.len(), MAX_TEXT_BYTES);
