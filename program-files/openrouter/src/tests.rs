@@ -59,7 +59,9 @@ fn oversized_provider_response_fails_without_retrying() {
         // The adapter may close the socket immediately upon reaching its cap.
         let _ = socket.write_all(&body);
         listener.set_nonblocking(true).unwrap();
-        let until = Instant::now() + Duration::from_millis(300);
+        // Again::Soon waits RECONNECT_BACKOFF_MS (2 s) before retrying.
+        // A shorter observation window would miss an unintended second call.
+        let until = Instant::now() + Duration::from_millis(RECONNECT_BACKOFF_MS + 1_000);
         while Instant::now() < until {
             match listener.accept() {
                 Ok(_) => return true,
