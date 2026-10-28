@@ -63,14 +63,14 @@ fn oversized_provider_response_fails_without_retrying() {
         let until = Instant::now() + Duration::from_millis(RECONNECT_BACKOFF_MS + 1_000);
         while Instant::now() < until {
             match listener.accept() {
-                Ok(_) => return true,
+                Ok(_) => return Ok(true),
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                Err(error) => panic!("checking for a retry: {error}"),
+                Err(error) => return Err(error),
             }
         }
-        false
+        Ok(false)
     });
     let adapter = Adapter::new(
         &options(&["--base-url", &base, "--retries", "3", "--retry-backoff-ms", "10"]).unwrap(),
@@ -79,7 +79,7 @@ fn oversized_provider_response_fails_without_retrying() {
     let failure = adapter.complete("deepseek/x", &request(), Duration::from_secs(15)).unwrap_err();
     assert_eq!(failure.code, ErrorCode::ServiceError);
     assert!(failure.message.contains("8 MiB"), "{}", failure.message);
-    assert!(!server.join().unwrap(), "unexpected retry request");
+    assert!(!server.join().unwrap().unwrap(), "unexpected retry request");
 }
 
 /// A non-successful streaming response must preserve a local size-limit
@@ -103,14 +103,14 @@ fn oversized_error_body_in_stream_is_not_retried() {
         let until = Instant::now() + Duration::from_millis(RECONNECT_BACKOFF_MS + 1_000);
         while Instant::now() < until {
             match listener.accept() {
-                Ok(_) => return true,
+                Ok(_) => return Ok(true),
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                Err(error) => panic!("checking for a retry: {error}"),
+                Err(error) => return Err(error),
             }
         }
-        false
+        Ok(false)
     });
     let adapter = Arc::new(Adapter::new(
         &options(&["--base-url", &base, "--retries", "3", "--retry-backoff-ms", "10"]).unwrap(),
@@ -126,7 +126,7 @@ fn oversized_error_body_in_stream_is_not_retried() {
     };
     assert_eq!(error.code, ErrorCode::ServiceError, "{}", error.message);
     assert!(error.message.contains("8 MiB"), "{}", error.message);
-    assert!(!server.join().unwrap(), "unexpected retry request");
+    assert!(!server.join().unwrap().unwrap(), "unexpected retry request");
 }
 
 /// Reads one HTTP request from `socket`, headers and body, and returns the body.
