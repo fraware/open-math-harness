@@ -317,7 +317,7 @@ mod tests {
         let first = next_line(&mut pending, &mut scanned).unwrap();
         assert_eq!(first.len(), 16_385);
         assert_eq!(first.last(), Some(&b'\n'));
-        assert_eq!(next_line(&mut pending, &mut scanned).unwrap(), b"second\n");
+        assert_eq!(next_line(&mut pending, &mut scanned).unwrap(), b"second\n".to_vec());
         assert!(next_line(&mut pending, &mut scanned).is_none());
         assert_eq!(scanned, 0);
     }
