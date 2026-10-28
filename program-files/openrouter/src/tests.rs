@@ -35,7 +35,8 @@ fn options(extra: &[&str]) -> Result<Options, String> {
 fn oversized_response_is_non_retryable() {
     let key = Secret("k".into());
     let adapter = Adapter::new(&options(&[]).unwrap(), key.clone());
-    let (error, retry) = adapter.failed(&key, transport::Failure::Limit("response too large"), Again::Soon);
+    let (error, retry) =
+        adapter.failed(&key, transport::Failure::Limit("response too large"), Again::Soon);
     assert_eq!(retry, Again::No);
     assert_eq!(error.code, ErrorCode::ServiceError);
     assert_eq!(error.message, "response too large");
@@ -59,7 +60,17 @@ fn oversized_provider_response_fails_without_retrying() {
         // The adapter may close the socket immediately upon reaching its cap.
         let _ = socket.write_all(&body);
         listener.set_nonblocking(true).unwrap();
-        listener.accept().is_ok()
+        let until = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < until {
+            match listener.accept() {
+                Ok(_) => return true,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("checking for a retry: {error}"),
+            }
+        }
+        false
     });
     let adapter = Adapter::new(
         &options(&["--base-url", &base, "--retries", "3", "--retry-backoff-ms", "10"]).unwrap(),
