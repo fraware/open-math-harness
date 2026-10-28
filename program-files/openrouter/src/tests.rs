@@ -29,7 +29,6 @@ fn options(extra: &[&str]) -> Result<Options, String> {
     Options::parse(args)
 }
 
-
 /// Local response-size failures do not trigger another provider request.
 #[test]
 fn oversized_response_is_non_retryable() {
