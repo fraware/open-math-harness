@@ -322,6 +322,29 @@ mod tests {
         assert_eq!(scanned, 0);
     }
 
+    /// Every network-chunk split must preserve response lines, including
+    /// empty lines, CRLF and multibyte UTF-8 split across chunks.
+    #[test]
+    fn response_line_parser_preserves_all_two_chunk_fragmentations() {
+        let input = "α\n\nβ\r\nfinal";
+        for split in 0..=input.len() {
+            let mut pending = VecDeque::new();
+            let mut scanned = 0;
+            let mut lines: Vec<Vec<u8>> = Vec::new();
+            for chunk in [&input.as_bytes()[..split], &input.as_bytes()[split..]] {
+                append_pending(&mut pending, chunk).unwrap();
+                while let Some(line) = next_line(&mut pending, &mut scanned) {
+                    lines.push(line);
+                }
+            }
+            if !pending.is_empty() {
+                lines.push(pending.drain(..).collect());
+            }
+            let decoded: Vec<String> = lines.iter().map(|line| text(line).unwrap()).collect();
+            assert_eq!(decoded, ["α", "", "β", "final"], "split: {split}");
+        }
+    }
+
     /// Several valid lines must respect the total response bound. Rejection
     /// must leave the already collected response unchanged.
     #[test]
