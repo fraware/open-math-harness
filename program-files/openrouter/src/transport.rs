@@ -299,7 +299,7 @@ mod tests {
         assert!(matches!(append_pending(&mut empty, &oversized), Err(Failure::Limit(_))));
         assert!(empty.is_empty());
         append_pending(&mut empty, b"one\ntwo\n").unwrap();
-        assert_eq!(empty.into_iter().collect::<Vec<_>>(), b"one\ntwo\n");
+        assert_eq!(empty.into_iter().collect::<Vec<_>>(), b"one\ntwo\n".to_vec());
     }
 
     /// Scanning a long line split into tiny chunks must avoid repeatedly
@@ -341,7 +341,7 @@ mod tests {
                 lines.push(pending.drain(..).collect());
             }
             let decoded: Vec<String> = lines.iter().map(|line| text(line).unwrap()).collect();
-            assert_eq!(decoded, ["α", "", "β", "final"], "split: {split}");
+            assert_eq!(decoded, vec!["α".to_owned(), "".to_owned(), "β".to_owned(), "final".to_owned()], "split: {split}");
         }
     }
 
