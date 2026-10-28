@@ -34,8 +34,7 @@ fn options(extra: &[&str]) -> Result<Options, String> {
 fn oversized_response_is_non_retryable() {
     let key = Secret("k".into());
     let adapter = Adapter::new(&options(&[]).unwrap(), key.clone());
-    let (error, retry) =
-        adapter.failed(&key, transport::Failure::Limit("response too large"), Again::Soon);
+    let (error, retry) = adapter.failed(&key, transport::Failure::Limit("response too large"), Again::Soon);
     assert_eq!(retry, Again::No);
     assert_eq!(error.code, ErrorCode::ServiceError);
     assert_eq!(error.message, "response too large");
