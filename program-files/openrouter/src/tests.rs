@@ -29,6 +29,48 @@ fn options(extra: &[&str]) -> Result<Options, String> {
     Options::parse(args)
 }
 
+
+/// Local response-size failures do not trigger another provider request.
+#[test]
+fn oversized_response_is_non_retryable() {
+    let key = Secret("k".into());
+    let adapter = Adapter::new(&options(&[]).unwrap(), key.clone());
+    let (error, retry) = adapter.failed(&key, transport::Failure::Limit("response too large"), Again::Soon);
+    assert_eq!(retry, Again::No);
+    assert_eq!(error.code, ErrorCode::ServiceError);
+    assert_eq!(error.message, "response too large");
+}
+
+/// Exercise the complete HTTP path: a provider sends a large unterminated
+/// streaming line. The adapter rejects it locally, and makes no second call.
+#[test]
+fn oversized_provider_response_fails_without_retrying() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let body = vec![b'x'; (8 << 20) + 1];
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        read_request(&socket);
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        socket.write_all(headers.as_bytes()).unwrap();
+        // The adapter may close the socket immediately upon reaching its cap.
+        let _ = socket.write_all(&body);
+        listener.set_nonblocking(true).unwrap();
+        listener.accept().is_ok()
+    });
+    let adapter = Adapter::new(
+        &options(&["--base-url", &base, "--retries", "3", "--retry-backoff-ms", "10"]).unwrap(),
+        Secret("k".into()),
+    );
+    let failure = adapter.complete("deepseek/x", &request(), Duration::from_secs(15)).unwrap_err();
+    assert_eq!(failure.code, ErrorCode::ServiceError);
+    assert!(failure.message.contains("8 MiB"), "{}", failure.message);
+    assert!(!server.join().unwrap(), "unexpected retry request");
+}
+
 /// Reads one HTTP request from `socket`, headers and body, and returns the body.
 fn read_request(socket: &TcpStream) -> Vec<u8> {
     socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();

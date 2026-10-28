@@ -29,6 +29,10 @@ use crate::Secret;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often a wait looks at its deadline and its caller's `alive` check.
 pub const CHECK_EVERY: Duration = Duration::from_millis(50);
+/// Maximum bytes kept for the next provider response line, including pending chunks.
+const MAX_PENDING_BYTES: usize = 8 << 20;
+/// Maximum body bytes collected for a non-streaming completion or error.
+const MAX_TEXT_BYTES: usize = 16 << 20;
 
 /// Why an exchange stopped without an answer from the provider.
 #[derive(Debug)]
@@ -42,6 +46,8 @@ pub enum Failure {
     Send { unreachable: bool, detail: String },
     /// The response broke off while it was being read.
     Read(String),
+    /// A provider response exceeded a local memory-safety limit; do not retry.
+    Limit(&'static str),
 }
 
 /// A request that reached the provider and got a status line back. Dropping
@@ -123,8 +129,8 @@ impl Exchange {
 
     /// The next line of the body without its line ending, or `None` at the
     /// end. A last line without a line ending is still a line. Lines are not
-    /// bounded in length. A line is handed on as soon as it is whole; the
-    /// request deadline and upstream provider govern generation.
+    /// allowed to grow to at most MAX_PENDING_BYTES, and an oversized
+    /// provider response is rejected.
     pub fn line(&mut self, alive: &dyn Fn() -> bool) -> Result<Option<String>, Failure> {
         loop {
             if let Some(at) = self.pending.iter().position(|byte| *byte == b'\n') {
@@ -139,7 +145,7 @@ impl Exchange {
                 return text(&line).map(Some);
             }
             match self.runtime.drive(self.response.chunk(), self.deadline, alive)? {
-                Ok(Some(chunk)) => self.pending.extend_from_slice(&chunk),
+                Ok(Some(chunk)) => append_pending(&mut self.pending, &chunk)?,
                 Ok(None) => self.ended = true,
                 Err(e) => return Err(Failure::Read(chain(&e))),
             }
@@ -150,8 +156,7 @@ impl Exchange {
     pub fn text(&mut self, alive: &dyn Fn() -> bool) -> Result<String, Failure> {
         let mut all = String::new();
         while let Some(line) = self.line(alive)? {
-            all.push_str(&line);
-            all.push('\n');
+            append_text_line(&mut all, &line)?;
         }
         Ok(all)
     }
@@ -161,6 +166,27 @@ fn text(line: &[u8]) -> Result<String, Failure> {
     let line = std::str::from_utf8(line)
         .map_err(|_| Failure::Read("the provider sent a line that is not UTF-8".to_owned()))?;
     Ok(line.trim_end_matches(['\n', '\r']).to_owned())
+}
+
+/// Refuse to append more provider bytes than the line buffer holds. The HTTP
+/// library has already allocated the incoming chunk; this bounds the adapter's
+/// pending Vec, not total process memory.
+fn append_pending(pending: &mut Vec<u8>, chunk: &[u8]) -> Result<(), Failure> {
+    if chunk.len() > MAX_PENDING_BYTES.saturating_sub(pending.len()) {
+        return Err(Failure::Limit("provider response buffer exceeds 8 MiB"));
+    }
+    pending.extend_from_slice(chunk);
+    Ok(())
+}
+
+/// Apply a separate total limit when the whole response is collected.
+fn append_text_line(all: &mut String, line: &str) -> Result<(), Failure> {
+    if line.len().saturating_add(1) > MAX_TEXT_BYTES.saturating_sub(all.len()) {
+        return Err(Failure::Limit("provider response body exceeds 16 MiB"));
+    }
+    all.push_str(line);
+    all.push('\n');
+    Ok(())
 }
 
 /// An attempt's runtime, shut down without waiting when it is dropped.
@@ -236,6 +262,40 @@ mod tests {
     use std::sync::{Arc, Mutex, mpsc};
 
     use super::*;
+
+    /// An unterminated provider line or excessive pending network data must
+    /// never grow the adapter-owned byte buffer past its limit.
+    #[test]
+    fn pending_provider_bytes_have_an_exact_bound() {
+        let mut pending = vec![b'x'; MAX_PENDING_BYTES - 1];
+        append_pending(&mut pending, b"y").unwrap();
+        assert_eq!(pending.len(), MAX_PENDING_BYTES);
+        assert!(matches!(append_pending(&mut pending, b"z"), Err(Failure::Limit(_))));
+        assert_eq!(pending.len(), MAX_PENDING_BYTES);
+
+        let mut empty = Vec::new();
+        let oversized = vec![b'x'; MAX_PENDING_BYTES + 1];
+        assert!(matches!(append_pending(&mut empty, &oversized), Err(Failure::Limit(_))));
+        assert!(empty.is_empty());
+        append_pending(&mut empty, b"one\ntwo\n").unwrap();
+        assert_eq!(empty, b"one\ntwo\n");
+    }
+
+    /// Several valid lines must respect the total response bound. Rejection
+    /// must leave the already collected response unchanged.
+    #[test]
+    fn collected_provider_body_has_an_exact_bound() {
+        let mut all = String::new();
+        append_text_line(&mut all, &"x".repeat(MAX_TEXT_BYTES - 1)).unwrap();
+        assert_eq!(all.len(), MAX_TEXT_BYTES);
+        assert!(matches!(append_text_line(&mut all, "y"), Err(Failure::Limit(_))));
+        assert_eq!(all.len(), MAX_TEXT_BYTES);
+
+        let mut short = String::new();
+        append_text_line(&mut short, "one").unwrap();
+        append_text_line(&mut short, "two").unwrap();
+        assert_eq!(short, "one\ntwo\n");
+    }
 
     /// Looks a name up the way the system resolver does (hyper-util's
     /// `GaiResolver`): a blocking call on the runtime's blocking pool. The

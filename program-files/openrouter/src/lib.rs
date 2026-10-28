@@ -433,6 +433,7 @@ impl Adapter {
                 };
                 (Error::new(ErrorCode::ServiceError, key.scrub(&format!("{what}: {detail}"))), Again::Soon)
             }
+            Failure::Limit(detail) => (Error::new(ErrorCode::ServiceError, detail), Again::No),
             Failure::Read(detail) => (
                 Error::new(
                     ErrorCode::ServiceError,
@@ -635,10 +636,8 @@ impl Adapter {
             });
         }
         let mut assembler = wire::StreamAssembler::default();
-        // Unbounded for the same reason, and more sharply: this stream is
-        // consumed a line at a time and never held, so its length costs
-        // nothing. What grows is the assembled reply, and that is bounded by
-        // the tokens the request allows.
+        // The transport bounds individual provider lines. The assembler still
+        // accumulates reply fragments under the requested output token budget.
         let (mut thought, mut called) = (0, 0);
         while let Some(line) =
             exchange.line(&alive).map_err(|failure| self.failed(&key, failure, again(delivered)))?
