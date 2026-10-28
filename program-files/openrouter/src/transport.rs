@@ -30,7 +30,7 @@ use crate::Secret;
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often a wait looks at its deadline and its caller's `alive` check.
 pub const CHECK_EVERY: Duration = Duration::from_millis(50);
-/// Maximum bytes kept for the next provider response line, including pending chunks.
+/// Maximum unconsumed provider bytes held across queued response lines.
 const MAX_PENDING_BYTES: usize = 8 << 20;
 /// Maximum body bytes collected for a non-streaming completion or error.
 const MAX_TEXT_BYTES: usize = 16 << 20;
