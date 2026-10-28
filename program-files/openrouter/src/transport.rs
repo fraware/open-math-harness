@@ -61,6 +61,8 @@ pub struct Exchange {
     deadline: Instant,
     /// Body bytes read but not yet handed out as a line.
     pending: VecDeque<u8>,
+    /// Bytes of the current unterminated line already searched for '\n'.
+    scanned: usize,
     ended: bool,
 }
 
@@ -120,7 +122,7 @@ fn send(
         unreachable: e.is_connect() || e.is_timeout(),
         detail: chain(&e),
     })?;
-    Ok(Exchange { response, runtime, deadline, pending: VecDeque::new(), ended: false })
+    Ok(Exchange { response, runtime, deadline, pending: VecDeque::new(), scanned: 0, ended: false })
 }
 
 impl Exchange {
@@ -134,8 +136,7 @@ impl Exchange {
     /// avoids shifting the rest of a large chunk for every short SSE line.
     pub fn line(&mut self, alive: &dyn Fn() -> bool) -> Result<Option<String>, Failure> {
         loop {
-            if let Some(at) = self.pending.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = self.pending.drain(..=at).collect();
+            if let Some(line) = next_line(&mut self.pending, &mut self.scanned) {
                 return text(&line).map(Some);
             }
             if self.ended {
@@ -143,6 +144,7 @@ impl Exchange {
                     return Ok(None);
                 }
                 let line: Vec<u8> = self.pending.drain(..).collect();
+                self.scanned = 0;
                 return text(&line).map(Some);
             }
             match self.runtime.drive(self.response.chunk(), self.deadline, alive)? {
@@ -167,6 +169,24 @@ fn text(line: &[u8]) -> Result<String, Failure> {
     let line = std::str::from_utf8(line)
         .map_err(|_| Failure::Read("the provider sent a line that is not UTF-8".to_owned()))?;
     Ok(line.trim_end_matches(['\n', '\r']).to_owned())
+}
+
+/// Drain a complete response line, searching only bytes added since the last
+/// unsuccessful search. This makes a long line arriving one byte per chunk
+/// linear in its length instead of repeatedly scanning its prefix.
+fn next_line(pending: &mut VecDeque<u8>, scanned: &mut usize) -> Option<Vec<u8>> {
+    debug_assert!(*scanned <= pending.len());
+    match pending.range(*scanned..).position(|byte| *byte == b'\n') {
+        Some(relative) => {
+            let end = *scanned + relative + 1;
+            *scanned = 0;
+            Some(pending.drain(..end).collect())
+        }
+        None => {
+            *scanned = pending.len();
+            None
+        }
+    }
 }
 
 /// Refuse to retain more response bytes than the buffer holds. Reqwest has
@@ -280,6 +300,26 @@ mod tests {
         assert!(empty.is_empty());
         append_pending(&mut empty, b"one\ntwo\n").unwrap();
         assert_eq!(empty.into_iter().collect::<Vec<_>>(), b"one\ntwo\n");
+    }
+
+    /// Scanning a long line split into tiny chunks must avoid repeatedly
+    /// searching its existing prefix. Short lines in one chunk remain ordered.
+    #[test]
+    fn searches_each_provider_byte_only_once_across_chunks() {
+        let mut pending = VecDeque::new();
+        let mut scanned = 0;
+        for n in 1..=16_384 {
+            append_pending(&mut pending, b"x").unwrap();
+            assert!(next_line(&mut pending, &mut scanned).is_none());
+            assert_eq!(scanned, n);
+        }
+        append_pending(&mut pending, b"\nsecond\n").unwrap();
+        let first = next_line(&mut pending, &mut scanned).unwrap();
+        assert_eq!(first.len(), 16_385);
+        assert_eq!(first.last(), Some(&b'\n'));
+        assert_eq!(next_line(&mut pending, &mut scanned).unwrap(), b"second\n");
+        assert!(next_line(&mut pending, &mut scanned).is_none());
+        assert_eq!(scanned, 0);
     }
 
     /// Several valid lines must respect the total response bound. Rejection
