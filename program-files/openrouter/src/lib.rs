@@ -636,8 +636,9 @@ impl Adapter {
             });
         }
         let mut assembler = wire::StreamAssembler::default();
-        // The transport bounds individual provider lines. The assembler still
-        // accumulates reply fragments under the requested output token budget.
+        // The transport bounds unconsumed provider bytes. The assembler stores
+        // reply fragments separately; the requested token budget is enforced
+        // by the provider, not a local bound on assembler memory.
         let (mut thought, mut called) = (0, 0);
         while let Some(line) =
             exchange.line(&alive).map_err(|failure| self.failed(&key, failure, again(delivered)))?
